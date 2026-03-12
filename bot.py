@@ -1,8 +1,12 @@
 import os
 import re
 import uuid
+import time
+import threading
 import logging
 import requests
+
+from flask import Flask, request, jsonify
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Updater,
@@ -18,17 +22,19 @@ from telegram.ext import (
 # =======================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ENV = os.getenv("GROUP")
-MP_ACCESS = os.getenv("MP_ACCESS")  # token de prueba o productivo
+MP_ACCESS = os.getenv("MP_ACCESS")
 PRICE = float(os.getenv("MOVIE_PRICE", "11"))
+CURRENCY_ID = os.getenv("CURRENCY_ID", "MXN")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://bot-peliculas-production.up.railway.app")
 
 if not BOT_TOKEN:
-    raise ValueError("❌ Falta la variable BOT_TOKEN")
+    raise ValueError("❌ Falta BOT_TOKEN")
 
 if not GROUP_ENV:
-    raise ValueError("❌ Falta la variable GROUP")
+    raise ValueError("❌ Falta GROUP")
 
 if not MP_ACCESS:
-    raise ValueError("❌ Falta la variable MP_ACCESS")
+    raise ValueError("❌ Falta MP_ACCESS")
 
 GROUP_ID = int(GROUP_ENV)
 
@@ -39,13 +45,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # =======================
-# MEMORIA TEMPORAL
+# APP WEBHOOK
 # =======================
-# titulo_limpio -> message_id
-peliculas = {}
+app = Flask(__name__)
 
 # =======================
-# UTILS
+# MEMORIA TEMPORAL
+# peliculas[titulo_limpio] = message_id
+# pagos[external_reference] = {"user_id": ..., "titulo": ..., "message_id": ..., "entregado": False}
+# =======================
+peliculas = {}
+pagos = {}
+
+# =======================
+# UTILIDADES
 # =======================
 def clean_text(text: str) -> str:
     if not text:
@@ -58,11 +71,37 @@ def clean_text(text: str) -> str:
 def is_private_chat(update: Update) -> bool:
     return bool(update.message and update.message.chat.type == "private")
 
-def create_mp_preference(title: str, user_id: int) -> str:
-    """
-    Crea una preferencia de Mercado Pago Checkout Pro y devuelve la URL de pago.
-    En pruebas, normalmente conviene usar sandbox_init_point si existe.
-    """
+def price_text() -> str:
+    return f"{int(PRICE) if float(PRICE).is_integer() else PRICE}"
+
+def send_movie_card(reply_func, titulo: str) -> None:
+    keyboard = [
+        [InlineKeyboardButton("💳 Comprar", callback_data=f"comprar|{titulo}")],
+        [InlineKeyboardButton("🎬 Ver tráiler", callback_data=f"trailer|{titulo}")]
+    ]
+    reply_func(
+        f"😀 Disponible\n\n"
+        f"🎬 {titulo.title()}\n"
+        f"💰 Precio ${price_text()}",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+def get_payment_info(payment_id: str) -> dict:
+    url = f"https://api.mercadopago.com/v1/payments/{payment_id}"
+    headers = {
+        "Authorization": f"Bearer {MP_ACCESS}",
+        "Content-Type": "application/json",
+    }
+
+    response = requests.get(url, headers=headers, timeout=30)
+
+    if response.status_code != 200:
+        logger.error("Error consultando pago %s: %s", payment_id, response.text)
+        raise RuntimeError(response.text)
+
+    return response.json()
+
+def create_mp_preference(title: str, user_id: int, message_id: int) -> str:
     url = "https://api.mercadopago.com/checkout/preferences"
 
     external_reference = f"tg-{user_id}-{uuid.uuid4().hex[:12]}"
@@ -73,14 +112,22 @@ def create_mp_preference(title: str, user_id: int) -> str:
                 "title": title.title(),
                 "quantity": 1,
                 "unit_price": PRICE,
-                "currency_id": "MXN"
+                "currency_id": CURRENCY_ID
             }
         ],
         "external_reference": external_reference,
         "metadata": {
             "telegram_user_id": user_id,
             "movie_title": title,
-        }
+            "message_id": message_id
+        },
+        "back_urls": {
+            "success": f"{PUBLIC_BASE_URL}/success",
+            "failure": f"{PUBLIC_BASE_URL}/failure",
+            "pending": f"{PUBLIC_BASE_URL}/pending"
+        },
+        "auto_return": "approved",
+        "notification_url": f"{PUBLIC_BASE_URL}/webhook"
     }
 
     headers = {
@@ -92,36 +139,112 @@ def create_mp_preference(title: str, user_id: int) -> str:
 
     if response.status_code not in (200, 201):
         logger.error("Mercado Pago error %s: %s", response.status_code, response.text)
-        raise RuntimeError("No se pudo crear la preferencia de pago.")
+        raise RuntimeError(response.text)
 
     data = response.json()
-
-    # En pruebas suele existir sandbox_init_point
     payment_url = data.get("sandbox_init_point") or data.get("init_point")
+
     if not payment_url:
-        raise RuntimeError("Mercado Pago no devolvió una URL de pago.")
+        raise RuntimeError("Mercado Pago no devolvió URL de pago.")
+
+    pagos[external_reference] = {
+        "user_id": user_id,
+        "titulo": title,
+        "message_id": message_id,
+        "entregado": False,
+        "created_at": time.time(),
+        "preference_id": data.get("id"),
+    }
 
     logger.info(
-        "Preferencia creada | title=%s | user_id=%s | pref_id=%s",
+        "Preferencia creada | title=%s | user_id=%s | external_reference=%s | pref_id=%s",
         title,
         user_id,
+        external_reference,
         data.get("id"),
     )
 
     return payment_url
 
-def send_movie_card(reply_func, titulo: str) -> None:
-    keyboard = [
-        [InlineKeyboardButton("💳 Comprar", callback_data=f"comprar|{titulo}")],
-        [InlineKeyboardButton("🎬 Ver tráiler", callback_data=f"trailer|{titulo}")]
-    ]
+def entregar_pelicula_si_corresponde(payment_data: dict) -> None:
+    status = payment_data.get("status")
+    external_reference = payment_data.get("external_reference")
 
-    reply_func(
-        f"😀 Disponible\n\n"
-        f"🎬 {titulo.title()}\n"
-        f"💰 Precio ${int(PRICE) if PRICE.is_integer() else PRICE}",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    if status != "approved":
+        logger.info("Pago no aprobado todavía | status=%s | ext=%s", status, external_reference)
+        return
+
+    if not external_reference:
+        logger.warning("Pago aprobado sin external_reference")
+        return
+
+    pago = pagos.get(external_reference)
+    if not pago:
+        logger.warning("No se encontró pago en memoria para ext=%s", external_reference)
+        return
+
+    if pago.get("entregado"):
+        logger.info("Película ya entregada para ext=%s", external_reference)
+        return
+
+    user_id = pago["user_id"]
+    titulo = pago["titulo"]
+    message_id = pago["message_id"]
+
+    try:
+        updater.bot.send_message(
+            chat_id=user_id,
+            text=f"✅ Pago aprobado\n\n🎬 {titulo.title()}\nEnviando película..."
+        )
+        updater.bot.copy_message(
+            chat_id=user_id,
+            from_chat_id=GROUP_ID,
+            message_id=message_id
+        )
+        pago["entregado"] = True
+        logger.info("Película entregada | user_id=%s | titulo=%s", user_id, titulo)
+    except Exception:
+        logger.exception("Error entregando película para ext=%s", external_reference)
+
+# =======================
+# WEBHOOKS / HTTP
+# =======================
+@app.route("/", methods=["GET"])
+def home():
+    return "OK", 200
+
+@app.route("/success", methods=["GET"])
+def success():
+    return "Pago aprobado. Vuelve a Telegram.", 200
+
+@app.route("/failure", methods=["GET"])
+def failure():
+    return "Pago rechazado. Vuelve a Telegram.", 200
+
+@app.route("/pending", methods=["GET"])
+def pending():
+    return "Pago pendiente. Vuelve a Telegram.", 200
+
+@app.route("/webhook", methods=["POST"])
+def mp_webhook():
+    data = request.get_json(silent=True) or {}
+    logger.info("Webhook recibido: %s", data)
+
+    event_type = data.get("type")
+    payment_id = data.get("data", {}).get("id")
+
+    if event_type == "payment" and payment_id:
+        try:
+            payment_data = get_payment_info(payment_id)
+            entregar_pelicula_si_corresponde(payment_data)
+        except Exception:
+            logger.exception("Error procesando webhook payment_id=%s", payment_id)
+
+    return jsonify({"status": "ok"}), 200
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
 
 # =======================
 # COMANDOS
@@ -254,7 +377,16 @@ def button_handler(update: Update, context: CallbackContext) -> None:
     accion, titulo = data
 
     if accion == "seleccionar":
-        send_movie_card(query.edit_message_text, titulo)
+        keyboard = [
+            [InlineKeyboardButton("💳 Comprar", callback_data=f"comprar|{titulo}")],
+            [InlineKeyboardButton("🎬 Ver tráiler", callback_data=f"trailer|{titulo}")]
+        ]
+        query.edit_message_text(
+            f"😀 Disponible\n\n"
+            f"🎬 {titulo.title()}\n"
+            f"💰 Precio ${price_text()}",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return
 
     if accion == "comprar":
@@ -264,12 +396,12 @@ def button_handler(update: Update, context: CallbackContext) -> None:
             return
 
         try:
-            payment_url = create_mp_preference(titulo, query.from_user.id)
+            payment_url = create_mp_preference(titulo, query.from_user.id, message_id)
         except Exception as e:
             logger.exception("Error creando preferencia de Mercado Pago")
             query.edit_message_text(
                 f"❌ No pude generar el pago para '{titulo.title()}'.\n\n"
-                f"Detalle: {str(e)}"
+                f"Detalle:\n{str(e)}"
             )
             return
 
@@ -280,10 +412,10 @@ def button_handler(update: Update, context: CallbackContext) -> None:
 
         query.edit_message_text(
             f"🎬 {titulo.title()}\n"
-            f"💰 Precio ${int(PRICE) if PRICE.is_integer() else PRICE}\n\n"
-            f"Se generó tu pago de prueba en Mercado Pago.\n"
-            f"Completa el pago desde el botón de abajo.\n\n"
-            f"⚠️ Esta versión aún no entrega automáticamente después del pago.",
+            f"💰 Precio ${price_text()}\n\n"
+            f"Se generó tu pago.\n"
+            f"Completa el checkout desde el botón de abajo.\n\n"
+            f"✅ La película se enviará automáticamente cuando el pago sea aprobado.",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
@@ -305,6 +437,11 @@ def error_handler(update: object, context: CallbackContext) -> None:
 # MAIN
 # =======================
 def main() -> None:
+    global updater
+
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
 
