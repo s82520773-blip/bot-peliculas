@@ -3,7 +3,7 @@ import re
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
 
-# Leer variables de entorno
+# Variables de entorno
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MP_ACCESS = os.getenv("MP_ACCESS")
 
