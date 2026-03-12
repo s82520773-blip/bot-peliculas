@@ -1,6 +1,7 @@
+import os
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 
-TOKEN = "TU_TOKEN_AQUI"
+TOKEN = os.getenv("BOT_TOKEN")
 
 def start(update, context):
     update.message.reply_text(
