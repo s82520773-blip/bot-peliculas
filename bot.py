@@ -42,15 +42,32 @@ def buscar(update, context):
             return
     update.message.reply_text("😕 No encontré esa película.")
 
-# Detectar película en grupo privado
+# Registrar película desde grupo
 def detectar_pelicula(update, context):
     if update.message.chat_id == GROUP_ID:
         texto = update.message.text
-        if texto:
+        if texto:  # Asegurarnos de que haya texto
             lineas = texto.split("\n")
-            titulo = clean_text(lineas[0])  # Primera línea solo, sin emojis
+            titulo = clean_text(lineas[0])  # Primera línea como título
             peliculas[titulo] = update.message.message_id
             print("Película registrada:", titulo)
+
+# Buscar película desde usuario
+def buscar(update, context):
+    texto_usuario = clean_text(update.message.text)
+    for titulo in peliculas:
+        if titulo in texto_usuario:  # Coincidencia parcial
+            keyboard = [
+                [InlineKeyboardButton("💳 Comprar", callback_data=f"comprar|{titulo}")],
+                [InlineKeyboardButton("🎬 Ver tráiler", callback_data=f"trailer|{titulo}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            update.message.reply_text(
+                f"😀 Disponible\n\n🎬 {titulo.title()}\n💰 Precio $11",
+                reply_markup=reply_markup
+            )
+            return
+    update.message.reply_text("😕 No encontré esa película.")
 
 # Manejo de botones
 def button_handler(update, context):
