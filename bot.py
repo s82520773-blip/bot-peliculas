@@ -4,10 +4,9 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
 
 # Variables de entorno
-TOKEN = os.getenv("BOT_TOKEN")
-GROUP_ID = int(os.getenv("GROUP_ID"))
-PORT = int(os.environ.get("PORT", 8443))
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GROUP_ID = int(os.getenv("GROUP"))
+MP_ACCESS = os.getenv("MP_ACCESS")
 
 # Diccionario para películas
 # Clave: título limpio, Valor: message_id del grupo privado
@@ -59,28 +58,28 @@ def button_handler(update, context):
     titulo = data[1].title()
 
     if accion == "comprar":
-        query.edit_message_text(f"💳 Para comprar '{titulo}', el pago será simulado en esta prueba.\n(En producción iría Mercado Pago)")
+        query.edit_message_text(
+            f"💳 Para comprar '{titulo}', el pago será simulado en esta prueba.\n(En producción se conectaría a Mercado Pago)"
+        )
     elif accion == "trailer":
         # Enlace de YouTube de ejemplo, reemplazar con el real
-        query.edit_message_text(f"🎬 Tráiler de '{titulo}': https://www.youtube.com/results?search_query={titulo.replace(' ', '+')}")
+        query.edit_message_text(
+            f"🎬 Tráiler de '{titulo}': https://www.youtube.com/results?search_query={titulo.replace(' ', '+')}"
+        )
 
 # Función principal
 def main():
-    updater = Updater(TOKEN, use_context=True)
+    updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
 
+    # Handlers
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, buscar))
     dp.add_handler(MessageHandler(Filters.chat(GROUP_ID), detectar_pelicula))
     dp.add_handler(CallbackQueryHandler(button_handler))
 
-    # Webhook
-    updater.start_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=TOKEN
-    )
-    updater.bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
+    # Start polling (no webhook)
+    updater.start_polling()
     updater.idle()
 
 if __name__ == "__main__":
