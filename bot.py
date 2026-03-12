@@ -46,9 +46,9 @@ def buscar(update, context):
 def detectar_pelicula(update, context):
     if update.message.chat_id == GROUP_ID:
         texto = update.message.text
-        if texto and "🎬" in texto:
+        if texto:
             lineas = texto.split("\n")
-            titulo = clean_text(lineas[0].replace("🎬", ""))
+            titulo = clean_text(lineas[0])  # Primera línea solo, sin emojis
             peliculas[titulo] = update.message.message_id
             print("Película registrada:", titulo)
 
