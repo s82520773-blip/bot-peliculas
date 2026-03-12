@@ -118,13 +118,31 @@ def bank_data_only_text() -> str:
     return text
 
 
+def build_movie_keyboard(titulo: str):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💸 Transferencia", callback_data=f"transfer|{titulo}")],
+        [InlineKeyboardButton("🏦 Datos bancarios", callback_data=f"bank|{titulo}")],
+        [InlineKeyboardButton("🎬 Ver tráiler", callback_data=f"trailer|{titulo}")]
+    ])
+
+
+def send_movie_card(reply_func, titulo: str):
+    reply_func(
+        f"😀 Disponible\n\n"
+        f"🎬 {titulo.title()}\n"
+        f"💰 Precio ${price_text()}",
+        reply_markup=build_movie_keyboard(titulo)
+    )
+
+
 # ========================
 # COMANDOS
 # ========================
 def start(update: Update, context: CallbackContext):
     update.message.reply_text(
         "🎬 Bienvenido\n\n"
-        "Escribe el nombre de la película que buscas."
+        "Escribe el nombre de la película que buscas.\n\n"
+        "También puedes usar /catalogo para ver lo disponible."
     )
 
 
@@ -133,9 +151,44 @@ def help_command(update: Update, context: CallbackContext):
         "Comandos disponibles:\n"
         "/start - iniciar\n"
         "/help - ayuda\n"
+        "/catalogo - ver películas disponibles\n"
         "/listar - ver catálogo (solo admin/grupo)\n"
         "/pagorealizado REFERENCIA - confirmar pago y entregar (solo admin)"
     )
+
+
+def catalogo(update: Update, context: CallbackContext):
+    if update.message.chat.type != "private":
+        update.message.reply_text("📩 Usa /catalogo en privado para ver las películas disponibles.")
+        return
+
+    if not peliculas:
+        update.message.reply_text("📭 No hay películas disponibles por el momento.")
+        return
+
+    titulos = sorted(peliculas.keys())
+
+    encabezado = (
+        "🎬 Catálogo disponible\n\n"
+        "Escribe el nombre de la película que te interese para comprarla.\n\n"
+    )
+
+    bloques = []
+    actual = encabezado
+
+    for titulo in titulos:
+        linea = f"- {titulo.title()}\n"
+        if len(actual) + len(linea) > 3900:
+            bloques.append(actual)
+            actual = linea
+        else:
+            actual += linea
+
+    if actual:
+        bloques.append(actual)
+
+    for bloque in bloques:
+        update.message.reply_text(bloque)
 
 
 def listar(update: Update, context: CallbackContext):
@@ -234,18 +287,7 @@ def buscar(update: Update, context: CallbackContext):
     if coincidencias:
         if len(coincidencias) == 1:
             titulo = coincidencias[0]
-            keyboard = [
-                [InlineKeyboardButton("💸 Transferencia", callback_data=f"transfer|{titulo}")],
-                [InlineKeyboardButton("🏦 Datos bancarios", callback_data=f"bank|{titulo}")],
-                [InlineKeyboardButton("🎬 Ver tráiler", callback_data=f"trailer|{titulo}")]
-            ]
-
-            update.message.reply_text(
-                f"😀 Disponible\n\n"
-                f"🎬 {titulo.title()}\n"
-                f"💰 Precio ${price_text()}",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+            send_movie_card(update.message.reply_text, titulo)
             return
 
         keyboard = []
@@ -285,28 +327,16 @@ def buttons(update: Update, context: CallbackContext):
     action, value = parts[0], parts[1]
     value = clean(value) if action not in ("paid",) else value.upper()
 
-    # ------------------------
-    # seleccionar coincidencia
-    # ------------------------
     if action == "select":
         titulo = value
-        keyboard = [
-            [InlineKeyboardButton("💸 Transferencia", callback_data=f"transfer|{titulo}")],
-            [InlineKeyboardButton("🏦 Datos bancarios", callback_data=f"bank|{titulo}")],
-            [InlineKeyboardButton("🎬 Ver tráiler", callback_data=f"trailer|{titulo}")]
-        ]
-
         query.edit_message_text(
             f"😀 Disponible\n\n"
             f"🎬 {titulo.title()}\n"
             f"💰 Precio ${price_text()}",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            reply_markup=build_movie_keyboard(titulo)
         )
         return
 
-    # ------------------------
-    # transferencia
-    # ------------------------
     if action == "transfer":
         titulo = value
         message_id = peliculas.get(titulo)
@@ -337,9 +367,6 @@ def buttons(update: Update, context: CallbackContext):
         )
         return
 
-    # ------------------------
-    # datos bancarios
-    # ------------------------
     if action == "bank":
         titulo = value
         keyboard = [
@@ -353,22 +380,14 @@ def buttons(update: Update, context: CallbackContext):
         )
         return
 
-    # ------------------------
-    # trailer
-    # ------------------------
     if action == "trailer":
         titulo = value
         url = f"https://youtube.com/results?search_query={titulo.replace(' ', '+')}+trailer"
-
         query.edit_message_text(f"🎬 Tráiler:\n{url}")
         return
 
-    # ------------------------
-    # solicitar película
-    # ------------------------
     if action == "request":
         titulo = value
-        user_id = str(query.from_user.id)
 
         if titulo not in solicitudes:
             solicitudes[titulo] = []
@@ -406,9 +425,6 @@ def buttons(update: Update, context: CallbackContext):
             )
         return
 
-    # ------------------------
-    # ya transfirió
-    # ------------------------
     if action == "paid":
         referencia = value
 
@@ -467,7 +483,6 @@ def detectar(update: Update, context: CallbackContext):
 
     logger.info("Película registrada: %s", titulo)
 
-    # Avisar a quienes la solicitaron
     if titulo in solicitudes and solicitudes[titulo]:
         for item in solicitudes[titulo]:
             user_id = item.get("user_id")
@@ -475,12 +490,6 @@ def detectar(update: Update, context: CallbackContext):
                 continue
 
             try:
-                keyboard = [
-                    [InlineKeyboardButton("💸 Transferencia", callback_data=f"transfer|{titulo}")],
-                    [InlineKeyboardButton("🏦 Datos bancarios", callback_data=f"bank|{titulo}")],
-                    [InlineKeyboardButton("🎬 Ver tráiler", callback_data=f"trailer|{titulo}")]
-                ]
-
                 context.bot.send_message(
                     chat_id=user_id,
                     text=(
@@ -489,7 +498,7 @@ def detectar(update: Update, context: CallbackContext):
                         f"🎬 {titulo.title()}\n"
                         f"💰 Precio ${price_text()}"
                     ),
-                    reply_markup=InlineKeyboardMarkup(keyboard)
+                    reply_markup=build_movie_keyboard(titulo)
                 )
             except Exception:
                 logger.exception("No se pudo notificar al usuario %s", user_id)
@@ -507,6 +516,7 @@ def main():
 
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("help", help_command))
+    dp.add_handler(CommandHandler("catalogo", catalogo))
     dp.add_handler(CommandHandler("listar", listar))
     dp.add_handler(CommandHandler("pagorealizado", pagorealizado))
 
