@@ -3,13 +3,17 @@ import re
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
 
-# Variables de entorno
+# Leer variables de entorno
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROUP_ID = int(os.getenv("GROUP"))
 MP_ACCESS = os.getenv("MP_ACCESS")
 
+# Verificar GROUP
+group_env = os.getenv("GROUP")
+if group_env is None:
+    raise ValueError("❌ La variable de entorno GROUP no está definida.")
+GROUP_ID = int(group_env)  # Convertir a entero
+
 # Diccionario para películas
-# Clave: título limpio, Valor: message_id del grupo privado
 peliculas = {}
 
 def clean_text(text):
@@ -26,7 +30,6 @@ def buscar(update, context):
     texto_usuario = clean_text(update.message.text)
     for titulo in peliculas:
         if titulo in texto_usuario:
-            # Botones
             keyboard = [
                 [InlineKeyboardButton("💳 Comprar", callback_data=f"comprar|{titulo}")],
                 [InlineKeyboardButton("🎬 Ver tráiler", callback_data=f"trailer|{titulo}")]
@@ -62,17 +65,14 @@ def button_handler(update, context):
             f"💳 Para comprar '{titulo}', el pago será simulado en esta prueba.\n(En producción se conectaría a Mercado Pago)"
         )
     elif accion == "trailer":
-        # Enlace de YouTube de ejemplo, reemplazar con el real
         query.edit_message_text(
             f"🎬 Tráiler de '{titulo}': https://www.youtube.com/results?search_query={titulo.replace(' ', '+')}"
         )
 
-# Función principal
 def main():
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    # Handlers
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, buscar))
     dp.add_handler(MessageHandler(Filters.chat(GROUP_ID), detectar_pelicula))
