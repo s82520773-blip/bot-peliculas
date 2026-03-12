@@ -38,8 +38,9 @@ def detectar_pelicula(update, context):
     if update.message.chat_id == GROUP_ID:
         texto = update.message.text
         if texto and "🎬" in texto:
-            # Limpiamos el título y lo guardamos
-            titulo = clean_text(texto.replace("🎬", ""))
+            # ✅ Corrección: tomar solo la primera línea del mensaje
+            lineas = texto.split("\n")
+            titulo = clean_text(lineas[0].replace("🎬", ""))
             peliculas[titulo] = update.message.message_id
             print("Película registrada:", titulo)
 
