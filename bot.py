@@ -25,7 +25,10 @@ GROUP_ENV = os.getenv("GROUP")
 MP_ACCESS = os.getenv("MP_ACCESS")
 PRICE = float(os.getenv("MOVIE_PRICE", "11"))
 CURRENCY_ID = os.getenv("CURRENCY_ID", "MXN")
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://bot-peliculas-production.up.railway.app")
+PUBLIC_BASE_URL = os.getenv(
+    "PUBLIC_BASE_URL",
+    "https://bot-peliculas-production.up.railway.app"
+)
 
 if not BOT_TOKEN:
     raise ValueError("❌ Falta BOT_TOKEN")
@@ -167,7 +170,7 @@ def create_mp_preference(title: str, user_id: int, message_id: int) -> str:
         raise RuntimeError(response.text)
 
     data = response.json()
-    payment_url = data.get("sandbox_init_point") or data.get("init_point")
+    payment_url = data["init_point"]
 
     if not payment_url:
         raise RuntimeError("Mercado Pago no devolvió URL de pago.")
@@ -248,6 +251,11 @@ def failure():
 @app.route("/pending", methods=["GET"])
 def pending():
     return "Pago pendiente. Vuelve a Telegram.", 200
+
+
+@app.route("/favicon.ico", methods=["GET"])
+def favicon():
+    return "", 204
 
 
 @app.route("/webhook", methods=["POST"])
