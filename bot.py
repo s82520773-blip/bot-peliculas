@@ -1,63 +1,87 @@
 import os
 import re
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
 
 # Variables de entorno
 TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
+PORT = int(os.environ.get("PORT", 8443))
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
-# Diccionario para guardar películas
-# Clave: título limpio en minúsculas, Valor: message_id en el grupo privado
+# Diccionario para películas
+# Clave: título limpio, Valor: message_id del grupo privado
 peliculas = {}
 
-# Función para limpiar texto (quitar emojis, símbolos y pasar a minúsculas)
 def clean_text(text):
     return re.sub(r'[^\w\s]', '', text).strip().lower()
 
 # Comando /start
 def start(update, context):
     update.message.reply_text(
-        "🎬 Bienvenido\n\n¿Que puedo hacer por ti?\n\nEscribe el nombre de la película que buscas."
+        "🎬 Bienvenido\n\n¿Que puedo hacer por ti?\nEscribe el nombre de la película que buscas."
     )
 
-# Función de búsqueda de películas
+# Buscar película
 def buscar(update, context):
     texto_usuario = clean_text(update.message.text)
-
     for titulo in peliculas:
         if titulo in texto_usuario:
+            # Botones
+            keyboard = [
+                [InlineKeyboardButton("💳 Comprar", callback_data=f"comprar|{titulo}")],
+                [InlineKeyboardButton("🎬 Ver tráiler", callback_data=f"trailer|{titulo}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             update.message.reply_text(
-                f"😀 Disponible\n\n🎬 {titulo.title()}\n\n💰 Precio $11\n\nEscribe COMPRAR para adquirirla."
+                f"😀 Disponible\n\n🎬 {titulo.title()}\n💰 Precio $11",
+                reply_markup=reply_markup
             )
             return
-
     update.message.reply_text("😕 No encontré esa película.")
 
-# Función para detectar nuevas películas en el grupo privado
+# Detectar película en grupo privado
 def detectar_pelicula(update, context):
     if update.message.chat_id == GROUP_ID:
         texto = update.message.text
         if texto and "🎬" in texto:
-            # ✅ Corrección: tomar solo la primera línea del mensaje
             lineas = texto.split("\n")
             titulo = clean_text(lineas[0].replace("🎬", ""))
             peliculas[titulo] = update.message.message_id
             print("Película registrada:", titulo)
+
+# Manejo de botones
+def button_handler(update, context):
+    query = update.callback_query
+    query.answer()
+    data = query.data.split("|")
+    accion = data[0]
+    titulo = data[1].title()
+
+    if accion == "comprar":
+        query.edit_message_text(f"💳 Para comprar '{titulo}', el pago será simulado en esta prueba.\n(En producción iría Mercado Pago)")
+    elif accion == "trailer":
+        # Enlace de YouTube de ejemplo, reemplazar con el real
+        query.edit_message_text(f"🎬 Tráiler de '{titulo}': https://www.youtube.com/results?search_query={titulo.replace(' ', '+')}")
 
 # Función principal
 def main():
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    # Handlers
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, buscar))
     dp.add_handler(MessageHandler(Filters.chat(GROUP_ID), detectar_pelicula))
+    dp.add_handler(CallbackQueryHandler(button_handler))
 
-    # Inicia el bot
-    updater.start_polling()
+    # Webhook
+    updater.start_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=TOKEN
+    )
+    updater.bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
     updater.idle()
 
-# Ejecutar
 if __name__ == "__main__":
     main()
