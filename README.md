@@ -1,14 +1,15 @@
-# Bot de películas
+# CineBot 🎬
 
-Bot de Telegram para buscar y entregar películas desde un grupo privado.
+Bot de Telegram para vender películas automáticamente.
 
-## Variables de entorno
+## Funciones
 
-- BOT_TOKEN
-- GROUP
+- Búsqueda de películas
+- Catálogo automático
+- Solicitud de películas
+- Notificación al administrador
+- Transferencias bancarias
+- Referencias únicas de pago
+- Entrega automática de películas
 
-## Ejecución local
-
-```bash
-pip install -r requirements.txt
-python bot.py
+## Estructura del proyecto
