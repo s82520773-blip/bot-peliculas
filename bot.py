@@ -1,7 +1,7 @@
 import os
 import re
+import json
 import uuid
-import time
 import threading
 import logging
 import requests
@@ -37,6 +37,7 @@ if not MP_ACCESS:
     raise ValueError("❌ Falta MP_ACCESS")
 
 GROUP_ID = int(GROUP_ENV)
+CATALOG_FILE = "peliculas.json"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -50,12 +51,10 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # =======================
-# MEMORIA TEMPORAL
-# peliculas[titulo_limpio] = message_id
-# pagos[external_reference] = {"user_id": ..., "titulo": ..., "message_id": ..., "entregado": False}
+# CATÁLOGO
 # =======================
 peliculas = {}
-pagos = {}
+
 
 # =======================
 # UTILIDADES
@@ -68,11 +67,35 @@ def clean_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text)
     return text
 
+
 def is_private_chat(update: Update) -> bool:
     return bool(update.message and update.message.chat.type == "private")
 
+
 def price_text() -> str:
     return f"{int(PRICE) if float(PRICE).is_integer() else PRICE}"
+
+
+def cargar_peliculas() -> dict:
+    if not os.path.exists(CATALOG_FILE):
+        return {}
+
+    try:
+        with open(CATALOG_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return {k: int(v) for k, v in data.items()}
+    except Exception:
+        logger.exception("Error cargando peliculas.json")
+        return {}
+
+
+def guardar_peliculas() -> None:
+    try:
+        with open(CATALOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(peliculas, f, ensure_ascii=False, indent=2)
+    except Exception:
+        logger.exception("Error guardando peliculas.json")
+
 
 def send_movie_card(reply_func, titulo: str) -> None:
     keyboard = [
@@ -85,6 +108,7 @@ def send_movie_card(reply_func, titulo: str) -> None:
         f"💰 Precio ${price_text()}",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
 
 def get_payment_info(payment_id: str) -> dict:
     url = f"https://api.mercadopago.com/v1/payments/{payment_id}"
@@ -100,6 +124,7 @@ def get_payment_info(payment_id: str) -> dict:
         raise RuntimeError(response.text)
 
     return response.json()
+
 
 def create_mp_preference(title: str, user_id: int, message_id: int) -> str:
     url = "https://api.mercadopago.com/checkout/preferences"
@@ -147,15 +172,6 @@ def create_mp_preference(title: str, user_id: int, message_id: int) -> str:
     if not payment_url:
         raise RuntimeError("Mercado Pago no devolvió URL de pago.")
 
-    pagos[external_reference] = {
-        "user_id": user_id,
-        "titulo": title,
-        "message_id": message_id,
-        "entregado": False,
-        "created_at": time.time(),
-        "preference_id": data.get("id"),
-    }
-
     logger.info(
         "Preferencia creada | title=%s | user_id=%s | external_reference=%s | pref_id=%s",
         title,
@@ -166,45 +182,50 @@ def create_mp_preference(title: str, user_id: int, message_id: int) -> str:
 
     return payment_url
 
+
 def entregar_pelicula_si_corresponde(payment_data: dict) -> None:
     status = payment_data.get("status")
-    external_reference = payment_data.get("external_reference")
 
     if status != "approved":
-        logger.info("Pago no aprobado todavía | status=%s | ext=%s", status, external_reference)
+        logger.info("Pago no aprobado todavía | status=%s", status)
         return
 
-    if not external_reference:
-        logger.warning("Pago aprobado sin external_reference")
+    metadata = payment_data.get("metadata", {}) or {}
+
+    user_id = metadata.get("telegram_user_id")
+    titulo = metadata.get("movie_title")
+    message_id = metadata.get("message_id")
+
+    if not user_id or not titulo or not message_id:
+        logger.warning("Faltan datos en metadata del pago: %s", metadata)
         return
 
-    pago = pagos.get(external_reference)
-    if not pago:
-        logger.warning("No se encontró pago en memoria para ext=%s", external_reference)
+    try:
+        user_id = int(user_id)
+        message_id = int(message_id)
+    except Exception:
+        logger.warning("Metadata inválida: %s", metadata)
         return
-
-    if pago.get("entregado"):
-        logger.info("Película ya entregada para ext=%s", external_reference)
-        return
-
-    user_id = pago["user_id"]
-    titulo = pago["titulo"]
-    message_id = pago["message_id"]
 
     try:
         updater.bot.send_message(
             chat_id=user_id,
-            text=f"✅ Pago aprobado\n\n🎬 {titulo.title()}\nEnviando película..."
+            text=f"✅ Pago aprobado\n\n🎬 {str(titulo).title()}\nEnviando película..."
         )
         updater.bot.copy_message(
             chat_id=user_id,
             from_chat_id=GROUP_ID,
             message_id=message_id
         )
-        pago["entregado"] = True
-        logger.info("Película entregada | user_id=%s | titulo=%s", user_id, titulo)
+        logger.info(
+            "Película entregada | user_id=%s | titulo=%s | message_id=%s",
+            user_id,
+            titulo,
+            message_id
+        )
     except Exception:
-        logger.exception("Error entregando película para ext=%s", external_reference)
+        logger.exception("Error entregando película desde metadata")
+
 
 # =======================
 # WEBHOOKS / HTTP
@@ -213,17 +234,21 @@ def entregar_pelicula_si_corresponde(payment_data: dict) -> None:
 def home():
     return "OK", 200
 
+
 @app.route("/success", methods=["GET"])
 def success():
     return "Pago aprobado. Vuelve a Telegram.", 200
+
 
 @app.route("/failure", methods=["GET"])
 def failure():
     return "Pago rechazado. Vuelve a Telegram.", 200
 
+
 @app.route("/pending", methods=["GET"])
 def pending():
     return "Pago pendiente. Vuelve a Telegram.", 200
+
 
 @app.route("/webhook", methods=["POST"])
 def mp_webhook():
@@ -242,9 +267,11 @@ def mp_webhook():
 
     return jsonify({"status": "ok"}), 200
 
+
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
+
 
 # =======================
 # COMANDOS
@@ -258,6 +285,7 @@ def start(update: Update, context: CallbackContext) -> None:
         "Escribe el nombre de la película que buscas."
     )
 
+
 def help_command(update: Update, context: CallbackContext) -> None:
     if not update.message:
         return
@@ -266,8 +294,9 @@ def help_command(update: Update, context: CallbackContext) -> None:
         "Comandos disponibles:\n"
         "/start - iniciar\n"
         "/help - ayuda\n"
-        "/listar - ver catálogo cargado en memoria (solo grupo)"
+        "/listar - ver catálogo cargado (solo grupo)"
     )
+
 
 def listar(update: Update, context: CallbackContext) -> None:
     if not update.message:
@@ -278,14 +307,15 @@ def listar(update: Update, context: CallbackContext) -> None:
         return
 
     if not peliculas:
-        update.message.reply_text("📭 No hay películas cargadas en memoria todavía.")
+        update.message.reply_text("📭 No hay películas registradas.")
         return
 
     titulos = sorted(peliculas.keys())
-    texto = "🎬 Películas cargadas:\n\n" + "\n".join(f"- {t.title()}" for t in titulos)
+    texto = "🎬 Películas registradas:\n\n" + "\n".join(f"- {t.title()}" for t in titulos)
 
     for i in range(0, len(texto), 4000):
         update.message.reply_text(texto[i:i + 4000])
+
 
 # =======================
 # REGISTRO DESDE GRUPO
@@ -313,7 +343,9 @@ def detectar_pelicula(update: Update, context: CallbackContext) -> None:
         return
 
     peliculas[titulo] = update.message.message_id
+    guardar_peliculas()
     logger.info("Película registrada: %s | message_id=%s", titulo, update.message.message_id)
+
 
 # =======================
 # BÚSQUEDA PRIVADA
@@ -358,6 +390,7 @@ def buscar(update: Update, context: CallbackContext) -> None:
         "Encontré varias coincidencias. Elige una:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
 
 # =======================
 # BOTONES
@@ -427,17 +460,23 @@ def button_handler(update: Update, context: CallbackContext) -> None:
         )
         return
 
+
 # =======================
 # ERRORES
 # =======================
 def error_handler(update: object, context: CallbackContext) -> None:
     logger.exception("❌ Ocurrió un error", exc_info=context.error)
 
+
 # =======================
 # MAIN
 # =======================
 def main() -> None:
     global updater
+    global peliculas
+
+    peliculas = cargar_peliculas()
+    logger.info("✅ Catálogo cargado: %s películas", len(peliculas))
 
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
@@ -458,6 +497,7 @@ def main() -> None:
     logger.info("✅ Bot iniciado...")
     updater.start_polling(drop_pending_updates=True)
     updater.idle()
+
 
 if __name__ == "__main__":
     main()
