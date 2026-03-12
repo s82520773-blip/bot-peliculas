@@ -3,29 +3,40 @@ import re
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
 
-# Variables de entorno
+# =======================
+# VARIABLES DE ENTORNO
+# =======================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MP_ACCESS = os.getenv("MP_ACCESS")
 
-# Verificar GROUP
 group_env = os.getenv("GROUP")
 if group_env is None:
     raise ValueError("❌ La variable de entorno GROUP no está definida.")
-GROUP_ID = int(group_env)  # Convertir a entero
+GROUP_ID = int(group_env)
 
-# Diccionario para películas
+# =======================
+# Diccionario de películas
+# =======================
 peliculas = {}
 
+# =======================
+# Funciones auxiliares
+# =======================
 def clean_text(text):
+    """Limpia el texto: quita caracteres no alfanuméricos y convierte a minúsculas"""
     return re.sub(r'[^\w\s]', '', text).strip().lower()
 
+# =======================
 # Comando /start
+# =======================
 def start(update, context):
     update.message.reply_text(
         "🎬 Bienvenido\n\n¿Que puedo hacer por ti?\nEscribe el nombre de la película que buscas."
     )
 
-# Buscar película
+# =======================
+# Buscar película desde usuario
+# =======================
 def buscar(update, context):
     texto_usuario = clean_text(update.message.text)
     for titulo in peliculas:
@@ -42,34 +53,21 @@ def buscar(update, context):
             return
     update.message.reply_text("😕 No encontré esa película.")
 
-# Registrar película desde grupo
+# =======================
+# Registrar película desde grupo privado
+# =======================
 def detectar_pelicula(update, context):
     if update.message.chat_id == GROUP_ID:
         texto = update.message.text
-        if texto:  # Asegurarnos de que haya texto
+        if texto:
             lineas = texto.split("\n")
             titulo = clean_text(lineas[0])  # Primera línea como título
             peliculas[titulo] = update.message.message_id
             print("Película registrada:", titulo)
 
-# Buscar película desde usuario
-def buscar(update, context):
-    texto_usuario = clean_text(update.message.text)
-    for titulo in peliculas:
-        if titulo in texto_usuario:  # Coincidencia parcial
-            keyboard = [
-                [InlineKeyboardButton("💳 Comprar", callback_data=f"comprar|{titulo}")],
-                [InlineKeyboardButton("🎬 Ver tráiler", callback_data=f"trailer|{titulo}")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            update.message.reply_text(
-                f"😀 Disponible\n\n🎬 {titulo.title()}\n💰 Precio $11",
-                reply_markup=reply_markup
-            )
-            return
-    update.message.reply_text("😕 No encontré esa película.")
-
+# =======================
 # Manejo de botones
+# =======================
 def button_handler(update, context):
     query = update.callback_query
     query.answer()
@@ -86,6 +84,9 @@ def button_handler(update, context):
             f"🎬 Tráiler de '{titulo}': https://www.youtube.com/results?search_query={titulo.replace(' ', '+')}"
         )
 
+# =======================
+# MAIN
+# =======================
 def main():
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
@@ -95,7 +96,7 @@ def main():
     dp.add_handler(MessageHandler(Filters.chat(GROUP_ID), detectar_pelicula))
     dp.add_handler(CallbackQueryHandler(button_handler))
 
-    # Start polling (no webhook)
+    # Start polling (sin webhook)
     updater.start_polling()
     updater.idle()
 
