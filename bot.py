@@ -29,6 +29,7 @@ PUBLIC_BASE_URL = os.getenv(
     "PUBLIC_BASE_URL",
     "https://bot-peliculas-production.up.railway.app"
 )
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 if not BOT_TOKEN:
     raise ValueError("❌ Falta BOT_TOKEN")
@@ -41,6 +42,7 @@ if not MP_ACCESS:
 
 GROUP_ID = int(GROUP_ENV)
 CATALOG_FILE = "peliculas.json"
+REQUESTS_FILE = "solicitudes.json"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -54,9 +56,10 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # =======================
-# CATÁLOGO
+# DATOS
 # =======================
 peliculas = {}
+solicitudes = {}
 
 
 # =======================
@@ -79,6 +82,9 @@ def price_text() -> str:
     return f"{int(PRICE) if float(PRICE).is_integer() else PRICE}"
 
 
+# =======================
+# PELICULAS JSON
+# =======================
 def cargar_peliculas() -> dict:
     if not os.path.exists(CATALOG_FILE):
         return {}
@@ -98,6 +104,95 @@ def guardar_peliculas() -> None:
             json.dump(peliculas, f, ensure_ascii=False, indent=2)
     except Exception:
         logger.exception("Error guardando peliculas.json")
+
+
+# =======================
+# SOLICITUDES JSON
+# =======================
+def cargar_solicitudes() -> dict:
+    if not os.path.exists(REQUESTS_FILE):
+        return {}
+
+    try:
+        with open(REQUESTS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+            return {}
+    except Exception:
+        logger.exception("Error cargando solicitudes.json")
+        return {}
+
+
+def guardar_solicitudes() -> None:
+    try:
+        with open(REQUESTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(solicitudes, f, ensure_ascii=False, indent=2)
+    except Exception:
+        logger.exception("Error guardando solicitudes.json")
+
+
+def agregar_solicitud(titulo: str, user) -> bool:
+    """
+    Devuelve True si se agregó una solicitud nueva.
+    False si el usuario ya había pedido esa película.
+    """
+    titulo = clean_text(titulo)
+    if not titulo:
+        return False
+
+    if titulo not in solicitudes:
+        solicitudes[titulo] = []
+
+    for item in solicitudes[titulo]:
+        if item.get("user_id") == user.id:
+            return False
+
+    solicitudes[titulo].append({
+        "user_id": user.id,
+        "first_name": user.first_name or "",
+        "username": user.username or "",
+    })
+    guardar_solicitudes()
+    return True
+
+
+def notificar_solicitudes_si_existen(titulo: str) -> None:
+    titulo = clean_text(titulo)
+    if titulo not in solicitudes or not solicitudes[titulo]:
+        return
+
+    interesados = solicitudes[titulo][:]
+
+    for item in interesados:
+        user_id = item.get("user_id")
+        if not user_id:
+            continue
+
+        try:
+            keyboard = [
+                [InlineKeyboardButton("💳 Comprar", callback_data=f"comprar|{titulo}")],
+                [InlineKeyboardButton("🎬 Ver tráiler", callback_data=f"trailer|{titulo}")]
+            ]
+
+            updater.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "🎉 Buenas noticias\n\n"
+                    f"La película que pediste ya está disponible:\n\n"
+                    f"🎬 {titulo.title()}\n"
+                    f"💰 Precio ${price_text()}"
+                ),
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            logger.info("Usuario notificado | user_id=%s | titulo=%s", user_id, titulo)
+
+        except Exception:
+            logger.exception("No se pudo notificar al usuario %s sobre %s", user_id, titulo)
+
+    # Una vez notificados, se elimina la lista de espera de esa película
+    solicitudes.pop(titulo, None)
+    guardar_solicitudes()
 
 
 def send_movie_card(reply_func, titulo: str) -> None:
@@ -354,6 +449,9 @@ def detectar_pelicula(update: Update, context: CallbackContext) -> None:
     guardar_peliculas()
     logger.info("Película registrada: %s | message_id=%s", titulo, update.message.message_id)
 
+    # Notificar a quienes la pidieron antes
+    notificar_solicitudes_si_existen(titulo)
+
 
 # =======================
 # BÚSQUEDA PRIVADA
@@ -378,7 +476,15 @@ def buscar(update: Update, context: CallbackContext) -> None:
     coincidencias = sorted(set(coincidencias))
 
     if not coincidencias:
-        update.message.reply_text("😕 No encontré esa película.")
+        keyboard = [
+            [InlineKeyboardButton("📥 Puedo conseguirla", callback_data=f"solicitar|{texto_usuario}")]
+        ]
+
+        update.message.reply_text(
+            "😕 No encontré esa película.\n\n"
+            "Si quieres, puedo intentar conseguirla para ti.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return
 
     if len(coincidencias) == 1:
@@ -428,6 +534,38 @@ def button_handler(update: Update, context: CallbackContext) -> None:
             f"💰 Precio ${price_text()}",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
+        return
+
+    if accion == "solicitar":
+        user = query.from_user
+        pelicula = clean_text(titulo)
+
+        fue_agregada = agregar_solicitud(pelicula, user)
+
+        if ADMIN_ID:
+            username = f"@{user.username}" if user.username else "Sin username"
+            mensaje_admin = (
+                "📥 Nueva solicitud de película\n\n"
+                f"🎬 Película: {pelicula}\n"
+                f"👤 Usuario: {user.first_name}\n"
+                f"🆔 ID: {user.id}\n"
+                f"🔗 Username: {username}"
+            )
+            try:
+                updater.bot.send_message(chat_id=ADMIN_ID, text=mensaje_admin)
+            except Exception:
+                logger.exception("No se pudo enviar solicitud al admin")
+
+        if fue_agregada:
+            query.edit_message_text(
+                "✅ Tu solicitud fue enviada.\n\n"
+                "Te avisaré cuando la película esté disponible."
+            )
+        else:
+            query.edit_message_text(
+                "✅ Ya tenía registrada tu solicitud para esa película.\n\n"
+                "Te avisaré cuando esté disponible."
+            )
         return
 
     if accion == "comprar":
@@ -482,9 +620,13 @@ def error_handler(update: object, context: CallbackContext) -> None:
 def main() -> None:
     global updater
     global peliculas
+    global solicitudes
 
     peliculas = cargar_peliculas()
+    solicitudes = cargar_solicitudes()
+
     logger.info("✅ Catálogo cargado: %s películas", len(peliculas))
+    logger.info("✅ Solicitudes cargadas: %s títulos", len(solicitudes))
 
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
